@@ -1,0 +1,76 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Core models for commander-only prototype (no auth yet)
+
+model Deck {
+  id        String    @id @default(cuid())
+  name      String
+  theme     String
+  notes     String    @default("")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  cards     DeckCard[]
+}
+
+model DeckCard {
+  id             String    @id @default(cuid())
+  deckId         String
+  parentDeckCardId String?
+  quantity       Int       @default(1)
+  inputLine      String    // original user input line
+  originalName   String
+  manaCost       String    @default("")
+  typeLine       String    @default("")
+  rulesText      String    @default("")
+  colorIdentity  String    @default("")
+  cmc            Float     @default(0)
+  isCommander    Boolean   @default(false)
+  isToken        Boolean   @default(false)
+  oracleId       String
+  scryfallId     String
+
+  createdAt      DateTime  @default(now())
+
+  deck           Deck      @relation(fields: [deckId], references: [id], onDelete: Cascade)
+  parentCard     DeckCard? @relation("TokenParent", fields: [parentDeckCardId], references: [id], onDelete: Cascade)
+  generatedTokens DeckCard[] @relation("TokenParent")
+  proxyIdeas     ProxyIdea[]
+
+  @@index([deckId])
+}
+
+model ProxyIdea {
+  id                 String   @id @default(cuid())
+  deckCardId         String
+  version            Int
+  thematicName       String
+  thematicFlavorText String
+  mediaReference     String   // include artist credit inside this string
+  artConcept         String
+  midjourneyPrompt   String
+  modelUsed          String
+  tokenStats         Json?
+  createdAt          DateTime @default(now())
+
+  deckCard           DeckCard @relation(fields: [deckCardId], references: [id], onDelete: Cascade)
+
+  @@unique([deckCardId, version])
+}
+
+// Cache of Scryfall card JSON by oracle_id
+model CacheCard {
+  oracleId  String  @id
+  jsonBlob  Json
+  updatedAt DateTime @updatedAt
+}
