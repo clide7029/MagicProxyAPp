@@ -24,6 +24,10 @@ export async function POST(req: Request) {
       is_commander: card.isCommander,
       color_identity: card.colorIdentity.split("").filter(Boolean),
       user_note: userNote,
+      is_double_faced: card.isDoubleFaced,
+      card_faces: card.cardFaces ? JSON.parse(card.cardFaces) : undefined,
+      produces_tokens: card.producesTokens,
+      token_types: card.tokenTypes ? JSON.parse(card.tokenTypes) : undefined,
     };
     const llm = await callOpenRouterBatch(theme, [input]);
     const out = llm.cards[0];
@@ -43,6 +47,8 @@ export async function POST(req: Request) {
         mediaReference: out.media_reference,
         artConcept: "",
         midjourneyPrompt: out.midjourney_prompt,
+        cardFaces: out.card_faces ? JSON.stringify(out.card_faces) : null,
+        tokens: out.tokens ? JSON.stringify(out.tokens) : null,
         modelUsed: process.env.OPENROUTER_MODEL || "openai/gpt-5-mini",
       },
     });

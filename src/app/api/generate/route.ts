@@ -43,7 +43,7 @@ export async function POST(req: Request) {
           continue;
         }
       }
-      const { rulesText, typeLine, manaCost, cmc } = extractPrimaryText(c);
+      const { rulesText, typeLine, manaCost, cmc, isDoubleFaced, /* powerToughness intentionally unused here */ cardFaces, producesTokens, tokenTypes } = extractPrimaryText(c);
       const created = await prisma.deckCard.create({
         data: {
           deckId: deck.id,
@@ -59,6 +59,10 @@ export async function POST(req: Request) {
           isToken: false,
           oracleId: c.oracle_id,
           scryfallId: c.id,
+          isDoubleFaced,
+          cardFaces: cardFaces ? JSON.stringify(cardFaces) : null,
+          producesTokens,
+          tokenTypes: tokenTypes ? JSON.stringify(tokenTypes) : null,
         },
       });
 
@@ -85,6 +89,10 @@ export async function POST(req: Request) {
         color_identity: c.color_identity || [],
         token_hints: tokens,
         user_note: line.note,
+        is_double_faced: isDoubleFaced,
+        card_faces: cardFaces,
+        produces_tokens: producesTokens,
+        token_types: tokenTypes,
       });
     }
 
@@ -105,6 +113,8 @@ export async function POST(req: Request) {
           mediaReference: out.media_reference,
           artConcept: "", // kept for future; not exposed per v1 fields
           midjourneyPrompt: out.midjourney_prompt,
+          cardFaces: out.card_faces ? JSON.stringify(out.card_faces) : null,
+          tokens: out.tokens ? JSON.stringify(out.tokens) : null,
           modelUsed: process.env.OPENROUTER_MODEL || "openai/gpt-5-mini",
         },
       });

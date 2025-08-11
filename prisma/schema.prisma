@@ -37,6 +37,10 @@ model DeckCard {
   cmc            Float     @default(0)
   isCommander    Boolean   @default(false)
   isToken        Boolean   @default(false)
+  isDoubleFaced  Boolean   @default(false)
+  cardFaces      String?   // JSON string of card faces for DFC
+  producesTokens Boolean   @default(false)
+  tokenTypes     String?   // JSON string of token types
   oracleId       String
   scryfallId     String
 
@@ -60,6 +64,8 @@ model ProxyIdea {
   artConcept         String
   midjourneyPrompt   String
   modelUsed          String
+  cardFaces          String?  // JSON string of DFC face proxies
+  tokens             String?  // JSON string of token proxies
   tokenStats         Json?
   createdAt          DateTime @default(now())
 

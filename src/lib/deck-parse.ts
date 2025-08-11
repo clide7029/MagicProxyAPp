@@ -23,10 +23,11 @@ export function parseDeckText(input: string): ParsedLine[] {
       const rest = commanderMatch[1].trim();
       let name = rest;
       let note: string | undefined;
-      const parts = rest.split(/\s*\/\/\s*/);
+      // Inline notes delimiter changed to " ; " to avoid conflict with DFC "//"
+      const parts = rest.split(/\s*;\s*/);
       if (parts.length > 1) {
         name = parts[0];
-        note = parts.slice(1).join(" // ");
+        note = parts.slice(1).join(" ; ");
       }
       results.push({ quantity: 1, name: name.trim(), note, is_commander: true });
       continue;
@@ -41,13 +42,13 @@ export function parseDeckText(input: string): ParsedLine[] {
       rest = qtyMatch[2];
     }
 
-    // optional inline note delimiter ' // '
+    // optional inline note delimiter ' ; ' (changed from '//' due to MDFC conflict)
     let name = rest;
     let note: string | undefined;
-    const parts = rest.split(/\s*\/\/\s*/);
+    const parts = rest.split(/\s*;\s*/);
     if (parts.length > 1) {
       name = parts[0];
-      note = parts.slice(1).join(" // ");
+      note = parts.slice(1).join(" ; ");
     }
 
     results.push({ quantity, name: name.trim(), note, is_commander: false });

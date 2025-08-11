@@ -13,34 +13,161 @@ type DeckResponse = {
     manaCost: string;
     typeLine: string;
     rulesText: string;
+    colorIdentity: string;
     cmc: number;
     isCommander: boolean;
+    isDoubleFaced: boolean;
+    powerToughness?: string;
+    cardFaces?: Array<{
+      name: string;
+      typeLine: string;
+      rulesText: string;
+      manaCost: string;
+      powerToughness?: string;
+    }>;
+    producesTokens: boolean;
+    tokenTypes?: Array<{ name: string; rulesText: string; powerToughness: string; colorIdentity: string; typeLine: string }>;
     proxyIdeas: Array<{
       thematicName: string;
       thematicFlavorText: string;
       mediaReference: string;
       midjourneyPrompt: string;
       version: number;
+      // For DFC cards, each face gets its own fields
+      cardFaces?: Array<{
+        thematicName?: string;
+        thematicFlavorText?: string;
+        mediaReference?: string;
+        midjourneyPrompt?: string;
+        // Also support snake_case keys from LLM
+        thematic_name?: string;
+        thematic_flavor_text?: string;
+        media_reference?: string;
+        midjourney_prompt?: string;
+      }>;
+      // For token-producing cards
+      tokens?: Array<{
+        thematicName?: string;
+        thematicFlavorText?: string;
+        mediaReference?: string;
+        midjourneyPrompt?: string;
+        // Also support snake_case keys from LLM
+        thematic_name?: string;
+        thematic_flavor_text?: string;
+        media_reference?: string;
+        midjourney_prompt?: string;
+      }>;
     }>;
   }>;
 };
 
+// Helpers to align generated token writeups to actual token types
+function extractSubtypeWordsFromTypeLine(typeLine: string): string[] {
+  // Expect formats like "Token Creature — Angel" or "Token Legendary Creature — Eldrazi Spawn"
+  const afterDash = typeLine.split("—")[1]?.trim().toLowerCase() || "";
+  if (!afterDash) return [];
+  const words = afterDash.split(/[^a-z]+/).filter((w) => w.length >= 3);
+  if (afterDash && !words.includes(afterDash)) {
+    // keep compound (e.g., "eldrazi spawn") as full phrase too
+    words.push(afterDash);
+  }
+  return Array.from(new Set(words));
+}
+
+function getSubtypeSynonyms(word: string): string[] {
+  const map: Record<string, string[]> = {
+    angel: ["angel", "seraph", "seraphim", "archangel"],
+    soldier: ["soldier", "trooper", "guard", "marshal", "legionnaire", "sentinel"],
+    goblin: ["goblin"],
+    zombie: ["zombie"],
+    spirit: ["spirit"],
+    elf: ["elf", "elven"],
+    merfolk: ["merfolk"],
+    vampire: ["vampire"],
+    dragon: ["dragon"],
+    eldrazi: ["eldrazi"],
+    spawn: ["spawn"],
+  };
+  return map[word] || [word];
+}
+
+type TokenIdea = {
+  thematicName?: string;
+  thematicFlavorText?: string;
+  mediaReference?: string;
+  midjourneyPrompt?: string;
+  thematic_name?: string;
+  thematic_flavor_text?: string;
+  media_reference?: string;
+  midjourney_prompt?: string;
+};
+
+function scoreTokenIdeaAgainstType(tokenIdea: TokenIdea, tokenType: { name: string; typeLine: string; powerToughness?: string }): number {
+  const haystack = [
+    tokenIdea?.thematicName,
+    tokenIdea?.thematic_name,
+    tokenIdea?.thematicFlavorText,
+    tokenIdea?.thematic_flavor_text,
+    tokenIdea?.midjourneyPrompt,
+    tokenIdea?.midjourney_prompt,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  const subtypeWords = extractSubtypeWordsFromTypeLine(tokenType.typeLine);
+  let score = 0;
+  for (const w of subtypeWords) {
+    const synonyms = getSubtypeSynonyms(w);
+    if (synonyms.some((syn) => haystack.includes(syn))) score += 3;
+    if (haystack.includes(w)) score += 2;
+  }
+  // slight boost if P/T appears in text
+  if (tokenType.powerToughness && haystack.includes(tokenType.powerToughness)) score += 1;
+  // slight boost if type's name appears
+  if (tokenType.name && haystack.includes(tokenType.name.toLowerCase())) score += 1;
+  return score;
+}
+
+function orderTokenTypesToIdeas(tokens: TokenIdea[] | undefined, tokenTypes: Array<{ name: string; rulesText: string; powerToughness: string; colorIdentity: string; typeLine: string }>): Array<typeof tokenTypes[number] | undefined> {
+  if (!tokens || tokens.length === 0) return tokenTypes;
+  const remaining = tokenTypes.map((t, i) => ({ idx: i, t }));
+  const ordered: Array<typeof tokenTypes[number] | undefined> = [];
+  for (const idea of tokens) {
+    if (remaining.length === 0) {
+      ordered.push(undefined);
+      continue;
+    }
+    let best = { score: -1, idxInRemaining: 0 };
+    for (let i = 0; i < remaining.length; i++) {
+      const candidate = remaining[i].t;
+      const s = scoreTokenIdeaAgainstType(idea, candidate);
+      if (s > best.score) best = { score: s, idxInRemaining: i };
+    }
+    const chosen = remaining.splice(best.idxInRemaining, 1)[0];
+    ordered.push(chosen?.t);
+  }
+  return ordered;
+}
+
 export default function Home() {
   const [theme, setTheme] = useState("Star Wars Empire");
   const [deckName, setDeckName] = useState("Empirial Expansion");
-  const [deckText, setDeckText] = useState(`Commander: Szarel, Genesis Sheperd // Palpatine
-Crystalline Crawler
-Braids, Arisen Nightmare
-Eumidian Wastewaker
-Evendo Brushrazer
-Bristly Bill, Spine Sower`);
+  const [deckText, setDeckText] = useState(`Commander: Szarel, Genesis Sheperd ; Palpatine
+Scute Swarm
+Walk-In Closet // Forgotten Cellar
+The Kami War
+1 Three Blind Mice
+Beast Within
+Rise of the Dalek`);
   const [deckIdea, setDeckIdea] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deckId, setDeckId] = useState<string | null>(null);
   const [deck, setDeck] = useState<DeckResponse | null>(null);
-  const [sortBy, setSortBy] = useState<"type" | "cmc" | "name" | "nickname">("type");
-  const [selectedVersionByCard, setSelectedVersionByCard] = useState<Record<string, number>>({});
+      const [sortBy, setSortBy] = useState<"type" | "cmc" | "name" | "nickname">("type");
+    const [selectedVersionByCard, setSelectedVersionByCard] = useState<Record<string, number>>({});
+    const [detailedView, setDetailedView] = useState(true);
 
   async function handleGenerate() {
     setError(null);
@@ -149,7 +276,6 @@ Bristly Bill, Spine Sower`);
       <div className="grid gap-3">
         <label className="font-medium">Theme</label>
         <input className="border rounded px-3 py-2 bg-transparent" value={theme} onChange={(e) => setTheme(e.target.value)} placeholder="Star Wars, LOTR, Spongebob..." />
-        <p className="text-sm opacity-80">Legendary names must follow NAME, ROLE. Prefer comics/illustration sources; include artist credit in reference.</p>
       </div>
       <div className="grid gap-3">
         <label className="font-medium">Thematic ideas (optional)</label>
@@ -163,8 +289,8 @@ Bristly Bill, Spine Sower`);
       </div>
       <div className="grid gap-3">
         <label className="font-medium">Deck list (plaintext)</label>
-        <textarea className="border rounded px-3 py-2 min-h-[220px] bg-transparent" value={deckText} onChange={(e) => setDeckText(e.target.value)} placeholder={`Commander: Kenrith, the Returned King\n1 Sol Ring\n1 Swords to Plowshares // make token match card theme`}></textarea>
-        <p className="text-sm opacity-80">Supports quantities and inline notes after // . Commander line optional. No deck size cap.</p>
+                  <textarea className="border rounded px-3 py-2 min-h-[220px] bg-transparent" value={deckText} onChange={(e) => setDeckText(e.target.value)} placeholder={`Commander: Szarel, Genesis Sheperd ; Palpatine\nScute Swarm\nWalk-In Closet // Forgotten Cellar\nThe Kami War\n1 Three Blind Mice\nBeast Within`}></textarea>
+        <p className="text-sm opacity-80">Supports quantities. For inline notes use &quot; ; &quot; (semicolon). Example: &quot;Kenrith ; make him Palpatine&quot;. Commander line optional. No deck size cap.</p>
       </div>
       <div className="flex gap-3">
         <button disabled={loading} onClick={handleGenerate} className="px-4 py-2 rounded bg-black text-white dark:bg-white dark:text-black disabled:opacity-60">
@@ -190,6 +316,12 @@ Bristly Bill, Spine Sower`);
               <option value="name">Name</option>
               <option value="nickname">Nickname</option>
             </select>
+            <button
+              className={`px-3 py-1 border rounded text-sm ${detailedView ? 'bg-blue-600 text-white' : 'bg-transparent'}`}
+              onClick={() => setDetailedView(!detailedView)}
+            >
+              {detailedView ? 'Hide Details' : 'Show Details'}
+            </button>
           </div>
           <div className="grid gap-3">
             {sortedCards.map((c) => {
@@ -204,8 +336,35 @@ Bristly Bill, Spine Sower`);
                         {current ? ` → ${current.thematicName}` : ""}
                         {c.isCommander ? " (Commander)" : ""}
                       </div>
-                      <div className="text-sm opacity-80">{c.manaCost} • {c.typeLine}</div>
-                      <div className="text-sm mt-1 whitespace-pre-wrap">{c.rulesText}</div>
+                      {!c.isDoubleFaced && (
+                        <>
+                          <div className="text-sm opacity-80">
+                            {(() => {
+                              const mc = c.manaCost || "";
+                              if (mc && mc.length > 0) {
+                                return <><span>{mc}</span> <span>•</span> </>;
+                              }
+                              const cid = c.colorIdentity;
+                              if (cid && cid.length > 0) {
+                                const formatted = cid.split("").map((ch) => `{${ch}}`).join("");
+                                return <><span className="font-mono text-blue-600 dark:text-blue-400">{formatted}</span> <span>•</span> </>;
+                              }
+                              return null;
+                            })()}
+                            {c.typeLine}
+                            {(() => {
+                              // compute P/T for single-faced cards from faces array if present, else from top-level
+                              const pt = !c.isDoubleFaced
+                                ? (c.cardFaces && c.cardFaces[0]?.powerToughness) || c.powerToughness
+                                : undefined;
+                              return pt ? (
+                                <span> • <span className="font-mono">{pt}</span></span>
+                              ) : null;
+                            })()}
+                          </div>
+                          <div className="text-sm mt-1 whitespace-pre-wrap">{c.rulesText}</div>
+                        </>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <select
@@ -225,10 +384,83 @@ Bristly Bill, Spine Sower`);
                   </div>
                   {current && (
                     <div className="mt-3 grid gap-1 text-sm">
-                      <div><span className="font-medium">Thematic Name:</span> {current.thematicName}</div>
-                      <div><span className="font-medium">Thematic Flavor Text:</span> {current.thematicFlavorText}</div>
-                      <div><span className="font-medium">Media Reference:</span> {current.mediaReference}</div>
+                      <div><span className="font-medium">Flavor Text:</span> {current.thematicFlavorText}</div>
+                      <div><span className="font-medium">Art Concept:</span> {current.mediaReference}</div>
                       <div className="break-all"><span className="font-medium">Midjourney Prompt:</span> {current.midjourneyPrompt}</div>
+                      
+                      {/* DFC Faces */}
+                      {detailedView && c.isDoubleFaced && current.cardFaces && current.cardFaces.length > 0 && (
+                        <div className="mt-3 p-2 bg-gray-50 dark:bg-gray-800 rounded">
+                          <div className="text-xs font-medium mb-2 text-gray-600 dark:text-gray-400">Double-Faced Card Proxies:</div>
+                          {current.cardFaces.map((face, index) => (
+                            <div key={index} className={`${index > 0 ? 'border-t pt-2 mt-2' : ''}`}>
+                              <div className="font-medium text-xs">{face.thematicName || face.thematic_name || `Face ${index + 1}`}</div>
+                              <div className="text-xs opacity-80 mb-2">
+                                {(() => {
+                                  const mc = c.cardFaces?.[index]?.manaCost || "";
+                                  if (mc && mc.length > 0) {
+                                    return <><span>{mc}</span> <span>•</span> </>;
+                                  }
+                                  const cid = c.colorIdentity;
+                                  if (cid && cid.length > 0) {
+                                    const formatted = cid.split("").map((ch) => `{${ch}}`).join("");
+                                    return <><span className="font-mono text-white-600 dark:text-white-400">{formatted}</span> <span>•</span> </>;
+                                  }
+                                  return null;
+                                })()}
+                                {c.cardFaces?.[index]?.typeLine}
+                                {c.cardFaces?.[index]?.powerToughness && (
+                                  <span> • <span className="font-mono">{c.cardFaces[index].powerToughness}</span></span>
+                                )}
+                              </div>
+                              <div className="text-xs mb-2 whitespace-pre-wrap">{c.cardFaces?.[index]?.rulesText}</div>
+                              <div><span className="font-medium text-xs">Flavor Text:</span> {face.thematicFlavorText || face.thematic_flavor_text}</div>
+                              <div><span className="font-medium text-xs">Art Concept:</span> {face.mediaReference || face.media_reference}</div>
+                              <div className="break-all"><span className="font-medium text-xs">Midjourney Prompt:</span> {face.midjourneyPrompt || face.midjourney_prompt}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      
+                      {/* Tokens */}
+                      {detailedView && c.producesTokens && c.tokenTypes && c.tokenTypes.length > 0 && (
+                        <div className="mt-3 p-2 bg-blue-50 dark:bg-blue-900/20 rounded">
+                          <div className="text-xs font-medium mb-2 text-white-600 dark:text-white-400">Token Proxies:</div>
+                          {current.tokens && current.tokens.length > 0 ? (
+                            (() => {
+                              const aligned = orderTokenTypesToIdeas(current.tokens!, c.tokenTypes || []);
+                              return current.tokens!.map((token, index) => {
+                                const tt = aligned[index] || c.tokenTypes?.[index];
+                                return (
+                              <div key={index} className={`${index > 0 ? 'border-t pt-2 mt-2' : ''}`}>
+                                <div className="font-medium text-xs">{token.thematicName || token.thematic_name || tt?.name || `Token ${index + 1}`}</div>
+                                {tt?.typeLine && (
+                                  <div className="text-xs opacity-80 mb-1">
+                                    {tt?.colorIdentity && (<span className="font-medium text-xs">{tt.colorIdentity} • </span>)}
+                                    {tt.typeLine} 
+                                    {tt?.powerToughness && (<span className="font-medium text-xs"> • {tt.powerToughness}</span>)}
+                                  </div>
+                                )}
+                                {tt?.rulesText && (
+                                  <div className="text-xs opacity-90 mb-1">
+                                    <span className="font-medium text-xs">Rules: </span>
+                                    <span className="font-medium text-xs">{tt.rulesText}</span>
+                                  </div>
+                                )}
+                                <div><span className="font-medium text-xs">Flavor:</span> {token.thematicFlavorText || token.thematic_flavor_text}</div>
+                                <div><span className="font-medium text-xs">Reference:</span> {token.mediaReference || token.media_reference}</div>
+                                <div className="break-all"><span className="font-medium text-xs">Prompt:</span> {token.midjourneyPrompt || token.midjourney_prompt}</div>
+                              </div>
+                                );
+                              });
+                            })()
+                          ) : (
+                            <div className="text-xs opacity-80 italic">
+                              No token proxies generated yet
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
