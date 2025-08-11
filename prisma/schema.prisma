@@ -68,10 +68,12 @@ model ProxyIdea {
   tokens             String?  // JSON string of token proxies
   tokenStats         Json?
   createdAt          DateTime @default(now())
+  updatedAt          DateTime @default(now()) @updatedAt
 
   deckCard           DeckCard @relation(fields: [deckCardId], references: [id], onDelete: Cascade)
 
   @@unique([deckCardId, version])
+  @@index([deckCardId])
 }
 
 // Cache of Scryfall card JSON by oracle_id

@@ -28,7 +28,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen bg-white text-black dark:bg-black dark:text-white`}
       >
         <header className="border-b px-6 py-4">
-          <h1 className="text-xl font-semibold">{process.env.NEXT_PUBLIC_APP_NAME}</h1>
+          <h1 className="text-xl font-semibold">{process.env.NEXT_PUBLIC_APP_NAME ?? "Magic Proxy App"}</h1>
         </header>
         <main className="p-6 max-w-6xl mx-auto">{children}</main>
         <footer className="border-t px-6 py-4 text-sm opacity-80">

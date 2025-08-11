@@ -1,17 +1,26 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { callOpenRouterBatch, type LlmCardInput } from "@/lib/openrouter";
+import { z } from "zod";
+import { rateLimitAllow } from "@/app/api/_rateLimit";
 
-const prisma = new PrismaClient();
+// Prisma singleton imported above
+
+export const runtime = "nodejs";
+
+const BodySchema = z.object({
+  deckCardId: z.string().min(1),
+  theme: z.string().min(2).max(100),
+  userNote: z.string().max(2000).optional(),
+});
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { deckCardId, theme, userNote } = body as {
-      deckCardId: string;
-      theme: string;
-      userNote?: string;
-    };
+    if (!rateLimitAllow(req)) {
+      return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+    }
+    const json = await req.json();
+    const { deckCardId, theme, userNote } = BodySchema.parse(json);
     const card = await prisma.deckCard.findUnique({ where: { id: deckCardId } });
     if (!card) return NextResponse.json({ error: "Not found" }, { status: 404 });
 

@@ -11,7 +11,7 @@ Setup
 
 Usage
 
-- Paste plaintext deck. Optional `Commander: NAME`. Inline notes after `//` per card.
+- Paste plaintext deck. Optional `Commander: NAME`. Inline notes after ` ; ` per card (semicolon).
 - Enter a theme. Generate to create proxy metadata per card.
 - View JSON at `/api/decks/:id`. Export CSV via `/api/decks/:id/export?format=csv.
 

@@ -46,6 +46,61 @@ export type LlmBatchResponse = {
   cards: LlmCardOutput[];
 };
 
+// Lightweight runtime validation with zod to catch malformed LLM JSON
+import { z } from "zod";
+const LlmCardOutputSchema = z.object({
+  original_name: z.string(),
+  thematic_name: z.string(),
+  mana_cost: z.string().default(""),
+  type_line: z.string().default(""),
+  rules_text: z.string().default(""),
+  thematic_flavor_text: z.string().default(""),
+  media_reference: z.string().default(""),
+  midjourney_prompt: z.string().default(""),
+  card_faces: z
+    .array(
+      z.object({
+        thematic_name: z.string().default(""),
+        thematic_flavor_text: z.string().default(""),
+        media_reference: z.string().default(""),
+        midjourney_prompt: z.string().default("")
+      })
+    )
+    .optional(),
+  tokens: z
+    .array(
+      z.object({
+        thematic_name: z.string().default(""),
+        thematic_flavor_text: z.string().default(""),
+        media_reference: z.string().default(""),
+        midjourney_prompt: z.string().default("")
+      })
+    )
+    .optional(),
+});
+const LlmBatchResponseSchema = z.object({ cards: z.array(LlmCardOutputSchema) });
+
+async function fetchWithRetry(input: RequestInfo | URL, init: RequestInit & { timeoutMs?: number; maxRetries?: number } = {}) {
+  const { timeoutMs = 30000, maxRetries = 2, ...rest } = init;
+  const attempt = async (n: number): Promise<Response> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const resp = await fetch(input, { ...rest, signal: controller.signal });
+      if (resp.ok) return resp;
+      if (n < maxRetries && (resp.status === 429 || resp.status >= 500)) {
+        const backoff = Math.min(2000 * Math.pow(2, n), 8000);
+        await new Promise((r) => setTimeout(r, backoff));
+        return attempt(n + 1);
+      }
+      return resp;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+  return attempt(0);
+}
+
 function buildBatchPrompt(theme: string, cards: LlmCardInput[], deckIdea?: string): string {
   const header = `You are designing themed proxy cards for Magic: The Gathering. Theme: "${theme}".
 ${deckIdea ? `\nAdditional thematic guidance (apply across all cards):\n${deckIdea}\n` : ""}
@@ -129,11 +184,14 @@ export async function callOpenRouterBatch(theme: string, cards: LlmCardInput[], 
 
   const prompt = buildBatchPrompt(theme, cards, deckIdea);
 
-  const resp = await fetch(`${baseUrl}/chat/completions`, {
+  const resp = await fetchWithRetry(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
+      // Optional metadata to improve routing/quotas
+      ...(process.env.NEXT_PUBLIC_APP_URL ? { "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL } : {}),
+      "X-Title": "Magic Proxy App",
     },
     body: JSON.stringify({
       model,
@@ -144,6 +202,8 @@ export async function callOpenRouterBatch(theme: string, cards: LlmCardInput[], 
       temperature: 0.8,
       response_format: { type: "json_object" },
     }),
+    timeoutMs: 30000,
+    maxRetries: 2,
   });
 
   if (!resp.ok) {
@@ -152,10 +212,7 @@ export async function callOpenRouterBatch(theme: string, cards: LlmCardInput[], 
   }
   const data = await resp.json();
   const content = data.choices?.[0]?.message?.content ?? "{}";
-  const parsed = JSON.parse(content) as LlmBatchResponse;
-  if (!parsed.cards || !Array.isArray(parsed.cards)) {
-    throw new Error("LLM response missing cards array");
-  }
+  const parsed = LlmBatchResponseSchema.parse(JSON.parse(content));
   // Ensure midjourney constraints
   parsed.cards = parsed.cards.map((c) => ({
     ...c,

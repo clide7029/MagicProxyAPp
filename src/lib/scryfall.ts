@@ -34,22 +34,110 @@ export type ScryfallCollectionResponse = {
 function scryfallHeaders(): Record<string, string> {
   return {
     "User-Agent": "clide-personal-mtgfetchapp",
-    Accept: "*/*",
+    "Accept": "*/*",
     "Content-Type": "application/json",
   };
 }
 
-export async function fetchScryfallCollection(identifiers: ScryfallIdentifier[]): Promise<ScryfallCollectionResponse> {
-  const resp = await fetch("https://api.scryfall.com/cards/collection", {
-    method: "POST",
-    headers: scryfallHeaders(),
-    body: JSON.stringify({ identifiers }),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Scryfall error ${resp.status}: ${text}`);
+// In-memory cache with TTL
+const CACHE_TTL_MS = 1000 * 60 * 60 * 12; // 12h
+type Timed<T> = { value: T; ts: number };
+const cacheById = new Map<string, Timed<ScryfallCard>>();
+const cacheByOracleId = new Map<string, Timed<ScryfallCard>>();
+const cacheByName = new Map<string, Timed<ScryfallCard>>(); // lowercased name
+
+function isFresh<T>(entry?: Timed<T>): entry is Timed<T> {
+  if (!entry) return false;
+  return Date.now() - entry.ts < CACHE_TTL_MS;
+}
+
+function cachePut(card: ScryfallCard) {
+  if (!card) return;
+  const timed: Timed<ScryfallCard> = { value: card, ts: Date.now() };
+  cacheById.set(card.id, timed);
+  if (card.oracle_id) cacheByOracleId.set(card.oracle_id, timed);
+  cacheByName.set(card.name.toLowerCase(), timed);
+}
+
+function cacheGet(identifier: ScryfallIdentifier): ScryfallCard | undefined {
+  if ("id" in identifier) {
+    const e = cacheById.get(identifier.id);
+    return isFresh(e) ? e.value : undefined;
   }
-  return (await resp.json()) as ScryfallCollectionResponse;
+  if ("oracle_id" in identifier) {
+    const e = cacheByOracleId.get(identifier.oracle_id);
+    return isFresh(e) ? e.value : undefined;
+  }
+  if ("name" in identifier) {
+    const e = cacheByName.get(identifier.name.toLowerCase());
+    return isFresh(e) ? e.value : undefined;
+  }
+  return undefined; // set+collector_number not cached directly
+}
+
+export async function fetchScryfallCollection(identifiers: ScryfallIdentifier[]): Promise<ScryfallCollectionResponse> {
+  const deduped = Array.from(new Set(identifiers.map((i) => JSON.stringify(i)))).map((s) => JSON.parse(s) as ScryfallIdentifier);
+
+  const cachedCards: ScryfallCard[] = [];
+  const missing: ScryfallIdentifier[] = [];
+  for (const id of deduped) {
+    const hit = cacheGet(id);
+    if (hit) cachedCards.push(hit);
+    else missing.push(id);
+  }
+
+  let fetched: ScryfallCard[] = [];
+  let notFound: Array<Record<string, string>> = [];
+  if (missing.length > 0) {
+    const resp = await fetch("https://api.scryfall.com/cards/collection", {
+      method: "POST",
+      headers: scryfallHeaders(),
+      body: JSON.stringify({ identifiers: missing }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Scryfall error ${resp.status}: ${text}`);
+    }
+    const data = (await resp.json()) as ScryfallCollectionResponse;
+    fetched = data.data || [];
+    notFound = data.not_found || [];
+    for (const c of fetched) cachePut(c);
+  }
+
+  // Assemble final data preserving input order, preferring fetched over cached for freshness
+  const byAnyKey = new Map<string, ScryfallCard>();
+  for (const c of [...cachedCards, ...fetched]) {
+    byAnyKey.set(c.id, c);
+    if (c.oracle_id) byAnyKey.set(c.oracle_id, c);
+    byAnyKey.set(c.name.toLowerCase(), c);
+  }
+
+  const ordered: ScryfallCard[] = [];
+  for (const id of identifiers) {
+    let key: string | undefined;
+    if ("id" in id) key = id.id;
+    else if ("oracle_id" in id) key = id.oracle_id;
+    else if ("name" in id) key = id.name.toLowerCase();
+    else key = undefined; // set+collector_number fallback below
+
+    let card = key ? byAnyKey.get(key) : undefined;
+    if (!card && "set" in id && "collector_number" in id) {
+      // Not cached by this composite key; fall back to network fetch for just this card
+      try {
+        const url = `https://api.scryfall.com/cards/${encodeURIComponent(id.set)}/${encodeURIComponent(id.collector_number)}`;
+        const resp = await fetch(url, { headers: scryfallHeaders() });
+        if (resp.ok) {
+          card = (await resp.json()) as ScryfallCard;
+          cachePut(card);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    if (card) ordered.push(card);
+  }
+
+  return { data: ordered, not_found: notFound };
 }
 
 export function extractPrimaryText(card: ScryfallCard): { 
@@ -533,12 +621,16 @@ export function getGeneratedTokenHints(card: ScryfallCard): Array<{ name: string
 }
 
 export async function fetchScryfallNamedFuzzy(name: string): Promise<ScryfallCard | null> {
+  const timed = cacheByName.get(name.toLowerCase());
+  if (isFresh(timed)) return timed.value;
   const url = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(name)}`;
   const resp = await fetch(url, { headers: scryfallHeaders() });
   if (!resp.ok) return null;
   const data = (await resp.json()) as (ScryfallCard & { object?: string }) | { object?: string; details?: string };
   if (data && "object" in data && data.object === "error") return null;
-  return data as ScryfallCard;
+  const card = data as ScryfallCard;
+  cachePut(card);
+  return card;
 }
 
 

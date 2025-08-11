@@ -1,16 +1,34 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
+import { enrichAndTransformDeck } from "@/lib/transform";
 
-const prisma = new PrismaClient();
+// Prisma singleton imported above
+
+export const runtime = "nodejs";
+
+function sanitizeForCsvCell(c: string) {
+  const dangerous = /^[=+\-@]/;
+  const normalized = c.replace(/\r/g, "").replace(/\n/g, " ");
+  return dangerous.test(normalized) ? `'${normalized}` : normalized;
+}
 
 function toCsv(rows: string[][]): string {
   return rows
-    .map((r) => r.map((c) => (c.includes(",") || c.includes("\n") ? `"${c.replace(/"/g, '""')}"` : c)).join(","))
+    .map((r) =>
+      r
+        .map((c) => {
+          const cell = sanitizeForCsvCell(String(c ?? ""));
+          return cell.includes(",") || cell.includes("\n") || cell.includes('"')
+            ? `"${cell.replace(/"/g, '""')}"`
+            : cell;
+        })
+        .join(",")
+    )
     .join("\n");
 }
 
-export async function GET(req: Request, { params }: any) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const url = new URL(req.url);
   const format = url.searchParams.get("format") || "json";
@@ -37,60 +55,76 @@ export async function GET(req: Request, { params }: any) {
       "Media Reference (artist credit)",
       "Midjourney Prompt",
       "Is Double-Faced",
-      "DFC Face 1 Name",
-      "DFC Face 1 Flavor",
-      "DFC Face 1 Reference",
-      "DFC Face 1 Prompt",
-      "DFC Face 2 Name",
-      "DFC Face 2 Flavor",
-      "DFC Face 2 Reference",
-      "DFC Face 2 Prompt",
       "Produces Tokens",
-      "Token 1 Name",
-      "Token 1 Flavor",
-      "Token 1 Reference",
-      "Token 1 Prompt",
-      "Token 2 Name",
-      "Token 2 Flavor",
-      "Token 2 Reference",
-      "Token 2 Prompt",
+      "Part Type",
+      "Part Index",
+      "Part Thematic Name",
+      "Part Flavor",
+      "Part Reference",
+      "Part Prompt",
+      "Part TypeLine",
+      "Part P/T",
+      "Part Token Rules",
+      "Part Token Color",
     ];
-    const rows = deck.cards.map((c: any) => {
-      const latest = c.proxyIdeas[0];
-      const cardFaces = latest?.cardFaces ? JSON.parse(latest.cardFaces) : [];
-      const tokens = latest?.tokens ? JSON.parse(latest.tokens) : [];
-      const isDoubleFaced = c.isDoubleFaced;
-      const producesTokens = c.producesTokens;
-      
-      return [
+    const transformed = await enrichAndTransformDeck(deck);
+    const rows: string[][] = [];
+    for (const c of transformed.cards as any[]) {
+      const latest = c.proxyIdeas[0] || {};
+      const base = [
         c.originalName,
-        latest?.thematicName || "",
+        latest.thematicName || "",
         c.manaCost,
         c.typeLine,
         c.rulesText,
-        latest?.thematicFlavorText || "",
-        latest?.mediaReference || "",
-        latest?.midjourneyPrompt || "",
-        isDoubleFaced ? "Yes" : "No",
-        cardFaces[0]?.thematic_name || cardFaces[0]?.thematicName || "",
-        cardFaces[0]?.thematic_flavor_text || cardFaces[0]?.thematicFlavorText || "",
-        cardFaces[0]?.media_reference || cardFaces[0]?.mediaReference || "",
-        cardFaces[0]?.midjourney_prompt || cardFaces[0]?.midjourneyPrompt || "",
-        cardFaces[1]?.thematic_name || cardFaces[1]?.thematicName || "",
-        cardFaces[1]?.thematic_flavor_text || cardFaces[1]?.thematicFlavorText || "",
-        cardFaces[1]?.media_reference || cardFaces[1]?.mediaReference || "",
-        cardFaces[1]?.midjourney_prompt || cardFaces[1]?.midjourneyPrompt || "",
-        producesTokens ? "Yes" : "No",
-        tokens[0]?.thematic_name || tokens[0]?.thematicName || "",
-        tokens[0]?.thematic_flavor_text || tokens[0]?.thematicFlavorText || "",
-        tokens[0]?.media_reference || tokens[0]?.mediaReference || "",
-        tokens[0]?.midjourney_prompt || tokens[0]?.midjourneyPrompt || "",
-        tokens[1]?.thematic_name || tokens[1]?.thematicName || "",
-        tokens[1]?.thematic_flavor_text || tokens[1]?.thematicFlavorText || "",
-        tokens[1]?.media_reference || tokens[1]?.mediaReference || "",
-        tokens[1]?.midjourney_prompt || tokens[1]?.midjourneyPrompt || "",
+        latest.thematicFlavorText || "",
+        latest.mediaReference || "",
+        latest.midjourneyPrompt || "",
+        c.isDoubleFaced ? "Yes" : "No",
+        c.producesTokens ? "Yes" : "No",
       ];
-    });
+      const cardFaces = Array.isArray(latest.cardFaces) ? latest.cardFaces : [];
+      const tokens = Array.isArray(latest.tokens) ? latest.tokens : [];
+      if (cardFaces.length === 0 && tokens.length === 0) {
+        rows.push([...base, "", "", "", "", "", "", "", "", ""]);
+        continue;
+      }
+      let faceIndex = 0;
+      for (const face of cardFaces) {
+        rows.push([
+          ...base,
+          "DFC Face",
+          String(faceIndex + 1),
+          face.thematic_name || face.thematicName || "",
+          face.thematic_flavor_text || face.thematicFlavorText || "",
+          face.media_reference || face.mediaReference || "",
+          face.midjourney_prompt || face.midjourneyPrompt || "",
+          c.cardFaces?.[faceIndex]?.typeLine || "",
+          c.cardFaces?.[faceIndex]?.powerToughness || "",
+          "",
+          "",
+        ]);
+        faceIndex++;
+      }
+      let tokenIndex = 0;
+      for (const token of tokens) {
+        const tt = c.tokenTypes?.[tokenIndex];
+        rows.push([
+          ...base,
+          "Token",
+          String(tokenIndex + 1),
+          token.thematic_name || token.thematicName || "",
+          token.thematic_flavor_text || token.thematicFlavorText || "",
+          token.media_reference || token.mediaReference || "",
+          token.midjourney_prompt || token.midjourneyPrompt || "",
+          tt?.typeLine || "",
+          tt?.powerToughness || "",
+          tt?.rulesText || "",
+          tt?.colorIdentity || "",
+        ]);
+        tokenIndex++;
+      }
+    }
     const csv = toCsv([header, ...rows]);
     return new NextResponse(csv, {
       headers: {
@@ -101,22 +135,7 @@ export async function GET(req: Request, { params }: any) {
   }
 
   if (format === "json") {
-    const transformedDeck = {
-      ...deck,
-      cards: deck.cards.map((c: any) => ({
-        ...c,
-        isDoubleFaced: c.isDoubleFaced,
-        cardFaces: c.cardFaces ? JSON.parse(c.cardFaces) : undefined,
-        producesTokens: c.producesTokens,
-        tokenTypes: c.tokenTypes ? JSON.parse(c.tokenTypes) : undefined,
-        proxyIdeas: c.proxyIdeas.map((idea: any) => ({
-          ...idea,
-          cardFaces: idea.cardFaces ? JSON.parse(idea.cardFaces) : undefined,
-          tokens: idea.tokens ? JSON.parse(idea.tokens) : undefined,
-        }))
-      }))
-    };
-    
+    const transformedDeck = await enrichAndTransformDeck(deck);
     return new NextResponse(JSON.stringify(transformedDeck, null, 2), {
       headers: {
         "Content-Type": "application/json",
